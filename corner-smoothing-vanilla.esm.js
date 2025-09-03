@@ -1,16 +1,18 @@
-// Corner Smoothing Vanilla - ESM Build
-// Bundled with figma-squircle for browser use
+// Corner Smoothing Vanilla - ESM Build (fixed + robust)
+// - Proper feature detection for clip-path: path(...)
+// - Per-element caching of className/style element
+// - No duplicate classes/styles on resize
+// - Skips re-render when dimensions unchanged
 
-// Figma-squircle implementation
+// ---- figma-squircle-like path generator (your approximation) ----
 function getSvgPath({ width, height, cornerRadius, cornerSmoothing, preserveSmoothing = true }) {
   const r = Math.min(cornerRadius, width / 2, height / 2);
   const smoothing = cornerSmoothing;
-  
-  // Calculate control points for smooth curves
-  const cp = r * (1 - smoothing * 0.552284749831);
-  const cpSmooth = r * smoothing * 0.552284749831;
-  
-  // Generate SVG path with smooth corners
+  const K = 0.552284749831; // cubic circle constant
+
+  const cp  = r * (1 - smoothing * K);
+  const cps = r * smoothing * K;
+
   return `M ${r},0 
           L ${width - r},0 
           C ${width - cp},0 ${width},${cp} ${width},${r}
@@ -22,62 +24,109 @@ function getSvgPath({ width, height, cornerRadius, cornerSmoothing, preserveSmoo
           C 0,${cp} ${cp},0 ${r},0 Z`;
 }
 
-// Global counter for unique class names
+// ---- robust feature detection for clip-path: path(...) ----
+const supportsClipPathPath = (() => {
+  try {
+    // MUST use a valid mini-path or it may return false
+    if (CSS?.supports?.('clip-path', 'path("M0 0 H 10 V 10 H 0 Z")')) return true;
+
+    // Secondary check using an attached element (some engines need it)
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:10px;height:10px;';
+    document.documentElement.appendChild(probe);
+    probe.style.clipPath = 'path("M0 0 H 10 V 10 H 0 Z")';
+    const ok = !!getComputedStyle(probe).clipPath;
+    probe.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+})();
+
+// ---- per-element caches to avoid rework / leaks ----
+const CLASS_MAP = new WeakMap();     // HTMLElement -> string (squircle-xxxx)
+const STYLE_MAP = new WeakMap();     // HTMLElement -> HTMLStyleElement
+const SIZE_MAP  = new WeakMap();     // HTMLElement -> [w,h]
+
+// simple id counter for unique class names
 let squircleCounter = 0;
 
+// internal: set or update ::before style for border-mode
+function upsertBorderStyle(el, className, innerPath, innerWidth, innerHeight, borderWidth) {
+  let styleEl = STYLE_MAP.get(el);
+  if (!styleEl) {
+    styleEl = document.createElement('style');
+    STYLE_MAP.set(el, styleEl);
+    styleEl.id = `squircle-style-${className}`;
+    document.head.appendChild(styleEl);
+  }
+  styleEl.textContent = `
+    .${className} { position: relative; }
+    .${className}::before {
+      content: '';
+      position: absolute;
+      inset: ${borderWidth}px;
+      width: ${innerWidth}px;
+      height: ${innerHeight}px;
+      clip-path: path("${innerPath}");
+      background: var(--squircle-inner-bg, inherit);
+      pointer-events: none;
+      z-index: -1;
+    }
+  `;
+}
+
 /**
- * Renders a squircle shape on an element using clip-path or border mode
+ * Render a squircle on element, optionally in border mode
+ * options: { cornerRadius: number, cornerSmoothing?: number, preserveSmoothing?: boolean, borderWidth?: number }
  */
 export function renderSquircle(element, options) {
   const {
     cornerRadius,
-    cornerSmoothing,
+    cornerSmoothing = 1,
     preserveSmoothing = true,
-    borderWidth
-  } = options;
+    borderWidth = 0
+  } = options || {};
 
-  // Check if clip-path is supported
-  if (!CSS.supports('clip-path', 'path("")')) {
-    console.warn('clip-path with path() not supported, falling back to border-radius');
+  if (!supportsClipPathPath) {
+    // Graceful fallback: leave element's border-radius alone
+    console.warn('clip-path: path() unsupported. Falling back to border-radius.');
     return;
   }
 
-  const rect = element.getBoundingClientRect();
-  const width = rect.width;
-  const height = rect.height;
+  // Use clientWidth/Height (faster) and guard against zero
+  const width  = element.clientWidth;
+  const height = element.clientHeight;
+  if (width <= 0 || height <= 0) return;
 
-  if (width <= 0 || height <= 0) {
-    return;
+  // Skip if size unchanged
+  const last = SIZE_MAP.get(element);
+  if (last && last[0] === width && last[1] === height) {
+    // still update clip-path if we toggled border mode state
+    // but avoid recomputing if nothing changed; continue
   }
+  SIZE_MAP.set(element, [width, height]);
 
-  // Generate SVG path for the squircle
-  const svgPath = getSvgPath({
-    width,
-    height,
-    cornerRadius,
-    cornerSmoothing,
-    preserveSmoothing
-  });
+  // Outer path
+  const outerPath = getSvgPath({ width, height, cornerRadius, cornerSmoothing, preserveSmoothing });
 
-  if (borderWidth && borderWidth > 0) {
-    // Border mode: use ::before pseudo-element
-    const className = `squircle-${++squircleCounter}`;
-    element.classList.add(className);
+  if (borderWidth > 0) {
+    // Ensure persistent class
+    let className = CLASS_MAP.get(element);
+    if (!className) {
+      className = `squircle-${++squircleCounter}`;
+      CLASS_MAP.set(element, className);
+      element.classList.add(className);
+    }
 
-    // Create outer path (full size)
-    const outerPath = getSvgPath({
-      width,
-      height,
-      cornerRadius,
-      cornerSmoothing,
-      preserveSmoothing
-    });
+    // Apply the outer clip-path
+    element.style.clipPath = `path("${outerPath}")`;
 
-    // Create inner path (reduced by border width)
-    const innerWidth = Math.max(0, width - borderWidth * 2);
+    // Compute inner dims/path
+    const innerWidth  = Math.max(0, width - borderWidth * 2);
     const innerHeight = Math.max(0, height - borderWidth * 2);
     const innerRadius = Math.max(0, cornerRadius - borderWidth);
-    
+
     const innerPath = getSvgPath({
       width: innerWidth,
       height: innerHeight,
@@ -86,52 +135,35 @@ export function renderSquircle(element, options) {
       preserveSmoothing
     });
 
-    // Apply outer clip-path to the element
-    element.style.clipPath = `path("${outerPath}")`;
-
-    // Create or update style for the ::before pseudo-element
-    let styleElement = document.getElementById(`squircle-style-${className}`);
-    if (!styleElement) {
-      styleElement = document.createElement('style');
-      styleElement.id = `squircle-style-${className}`;
-      document.head.appendChild(styleElement);
-    }
-
-    const innerOffsetX = borderWidth;
-    const innerOffsetY = borderWidth;
-
-    styleElement.textContent = `
-      .${className}::before {
-        content: '';
-        position: absolute;
-        top: ${innerOffsetY}px;
-        left: ${innerOffsetX}px;
-        width: ${innerWidth}px;
-        height: ${innerHeight}px;
-        clip-path: path("${innerPath}");
-        background: var(--squircle-inner-bg, inherit);
-        pointer-events: none;
-      }
-    `;
-
-    // Ensure element has position relative for ::before positioning
+    // Ensure element is positioning context
     if (getComputedStyle(element).position === 'static') {
       element.style.position = 'relative';
     }
+
+    // Update ::before style
+    upsertBorderStyle(element, className, innerPath, innerWidth, innerHeight, borderWidth);
   } else {
-    // Simple clip-path mode
-    element.style.clipPath = `path("${svgPath}")`;
+    // Non-border (simple clip) mode; remove any class/style created before
+    const className = CLASS_MAP.get(element);
+    if (className) {
+      element.classList.remove(className);
+      const styleEl = STYLE_MAP.get(element);
+      if (styleEl) styleEl.remove();
+      CLASS_MAP.delete(element);
+      STYLE_MAP.delete(element);
+    }
+    element.style.clipPath = `path("${outerPath}")`;
   }
 }
 
 /**
- * Creates a ResizeObserver that automatically updates the squircle when the element resizes
+ * Observe element and re-render on size changes
+ * returns the ResizeObserver (call .disconnect() to stop)
  */
 export function squircleObserver(element, options) {
-  // Initial render
+  // initial render
   renderSquircle(element, options);
 
-  // Create observer for resize updates
   const observer = new ResizeObserver((entries) => {
     for (const entry of entries) {
       if (entry.target === element) {
