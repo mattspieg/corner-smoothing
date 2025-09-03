@@ -1,4 +1,3 @@
-<script>
 (function(global) {
   'use strict';
 
@@ -245,4 +244,3 @@
   };
 
 })(typeof window !== 'undefined' ? window : this);
-</script>
