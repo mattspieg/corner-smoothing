@@ -41,101 +41,57 @@
 
   let squircleCounter = 0;
 
-  function renderSquircle(element, options) {
-    const {
-      cornerRadius,
-      cornerSmoothing,
-      preserveSmoothing = true,
-      borderWidth
-    } = options;
+function renderSquircle(element, options) {
+  const { cornerRadius, cornerSmoothing, preserveSmoothing = true, borderWidth } = options;
 
-    // use robust support check
-    if (!supportsClipPathPath) {
-      console.warn('clip-path: path() unsupported. Falling back to border-radius.');
-      return;
-    }
+  console.log('[renderSquircle] start →', element);
+  console.log(' └ options:', { cornerRadius, cornerSmoothing, borderWidth });
 
-    const rect = element.getBoundingClientRect();
-    const width = rect.width;
-    const height = rect.height;
-    if (width <= 0 || height <= 0) return;
+  const rect = element.getBoundingClientRect();
+  console.log(' └ rect:', rect.width + 'x' + rect.height);
 
-    const svgPath = getSvgPath({
-      width,
-      height,
-      cornerRadius,
-      cornerSmoothing,
-      preserveSmoothing
-    });
-
-    if (borderWidth && borderWidth > 0) {
-      const className = `squircle-${++squircleCounter}`;
-      element.classList.add(className);
-
-      const outerPath = getSvgPath({
-        width,
-        height,
-        cornerRadius,
-        cornerSmoothing,
-        preserveSmoothing
-      });
-
-      const innerWidth = Math.max(0, width - borderWidth * 2);
-      const innerHeight = Math.max(0, height - borderWidth * 2);
-      const innerRadius = Math.max(0, cornerRadius - borderWidth);
-
-      const innerPath = getSvgPath({
-        width: innerWidth,
-        height: innerHeight,
-        cornerRadius: innerRadius,
-        cornerSmoothing,
-        preserveSmoothing
-      });
-
-      element.style.clipPath = `path("${outerPath}")`;
-
-      let styleElement = document.getElementById(`squircle-style-${className}`);
-      if (!styleElement) {
-        styleElement = document.createElement('style');
-        styleElement.id = `squircle-style-${className}`;
-        document.head.appendChild(styleElement);
-      }
-
-      const innerOffsetX = borderWidth;
-      const innerOffsetY = borderWidth;
-
-      styleElement.textContent = `
-        .${className}::before {
-          content: '';
-          position: absolute;
-          top: ${innerOffsetY}px;
-          left: ${innerOffsetX}px;
-          width: ${innerWidth}px;
-          height: ${innerHeight}px;
-          clip-path: path("${innerPath}");
-          background: var(--squircle-inner-bg, inherit);
-          pointer-events: none;
-        }
-      `;
-
-      if (getComputedStyle(element).position === 'static') {
-        element.style.position = 'relative';
-      }
-    } else {
-      element.style.clipPath = `path("${svgPath}")`;
-    }
+  if (!supportsClipPathPath) {
+    console.warn('[renderSquircle] clip-path not supported → fallback');
+    return;
+  }
+  if (rect.width <= 0 || rect.height <= 0) {
+    console.warn('[renderSquircle] element has 0 size, skipping');
+    return;
   }
 
-  function squircleObserver(element, options) {
-    renderSquircle(element, options);
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        if (entry.target === element) renderSquircle(element, options);
-      }
-    });
-    observer.observe(element);
-    return observer;
+  const svgPath = getSvgPath({
+    width: rect.width,
+    height: rect.height,
+    cornerRadius,
+    cornerSmoothing,
+    preserveSmoothing
+  });
+
+  if (borderWidth && borderWidth > 0) {
+    console.log('[renderSquircle] BORDER mode');
+    element.style.clipPath = `path("${svgPath}")`;
+  } else {
+    console.log('[renderSquircle] SIMPLE mode');
+    element.style.clipPath = `path("${svgPath}")`;
   }
+  console.log(' └ applied style.clipPath =', element.style.clipPath);
+}
+
+function squircleObserver(element, options) {
+  console.log('[squircleObserver] attach observer to', element);
+  renderSquircle(element, options);
+
+  const observer = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.target === element) {
+        console.log('[squircleObserver] resize triggered');
+        renderSquircle(element, options);
+      }
+    }
+  });
+  observer.observe(element);
+  return observer;
+}
 
   const elementObservers = new WeakMap();
 
@@ -169,8 +125,15 @@
     else if (hasSolidBackground) innerBackground = backgroundColor;
     return { inner: innerBackground, hasGradient, hasSolidBackground };
   }
+  
 
   function initializeElement(element) {
+      console.log('[initializeElement] candidate:', element);
+
+  const cs = element.getAttribute('data-corner-smoothing');
+  const cr = element.getAttribute('data-corner-radius');
+  console.log(' └ attributes:', { cs, cr });
+
     if (elementObservers.has(element)) return;
 
     const cornerSmoothingAttr = element.getAttribute('data-corner-smoothing');
